@@ -1,0 +1,47 @@
+FROM composer:2.6 AS composer
+WORKDIR /app
+COPY composer.* ./
+RUN composer install \
+    --no-interaction \
+    --prefer-dist \
+    --optimize-autoloader \
+    --no-dev
+
+FROM node:20-slim AS node
+WORKDIR /app
+COPY package*.json ./
+COPY resources/ resources/
+RUN npm ci && npm run build
+
+FROM php:8.2-fpm-alpine
+
+WORKDIR /var/www/html
+
+RUN apk add --no-cache \
+    postgresql-dev \
+    libzip-dev \
+    && docker-php-ext-install -j$(nproc) \
+    pdo_pgsql \
+    zip \
+    opcache \
+    && docker-php-source delete
+
+RUN addgroup -g 1000 laravel && \
+    adduser -u 1000 -G laravel -s /bin/sh -D laravel
+
+COPY --chown=laravel:laravel . .
+COPY --chown=laravel:laravel --from=composer /app/vendor/ ./vendor/
+COPY --chown=laravel:laravel --from=node /app/public/build/ ./public/build/
+
+RUN chown -R laravel:laravel storage bootstrap/cache && \
+    chmod -R 775 storage bootstrap/cache
+
+USER laravel
+
+RUN php artisan optimize && \
+    php artisan route:cache && \
+    php artisan view:cache
+
+EXPOSE 9000
+
+CMD ["php-fpm"]
